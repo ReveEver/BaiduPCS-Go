@@ -3,6 +3,7 @@ package taskframework
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mattn/go-runewidth"
@@ -21,18 +22,21 @@ var Dot = Spinner{
 }
 
 type TaskPrinter struct {
-	Spinner    Spinner
-	ticker     *time.Ticker
-	updateChan chan interface{}
-	idMap      map[string]int
-	tasks      []*taskState
-	quit       bool
+	wg           *sync.WaitGroup // 需确保主循环退出
+	Spinner      Spinner
+	ticker       *time.Ticker
+	updateChan   chan interface{}
+	quit         bool
+	idMap        map[string]int
+	tasks        []*taskState
+	multiLineMsg string
+	mask         []int // 记录上次每行输出宽度, 下次输出时用空格覆盖
 }
 
 type taskState struct {
 	info *TaskInfo
 	stat int
-	msgs []string
+	msg  string
 }
 
 type taskMsg struct {
@@ -51,9 +55,10 @@ type quitMsg struct{}
 
 func NewTaskPrinter() *TaskPrinter {
 	r := &TaskPrinter{
+		wg:         new(sync.WaitGroup),
 		Spinner:    Dot,
 		ticker:     nil,
-		updateChan: make(chan interface{}),
+		updateChan: make(chan interface{}, 1),
 		idMap:      make(map[string]int),
 		tasks:      nil,
 		quit:       false,
@@ -66,16 +71,23 @@ func (p *TaskPrinter) SetTaskInfo(info *TaskInfo) {
 	p.tasks = append(p.tasks, &taskState{
 		info: info,
 		stat: TaskWait,
-		msgs: []string{"初始化..."},
+		msg:  "初始化...",
 	})
 }
 
 func (p *TaskPrinter) GetPrintFunc(id string) func(string, ...interface{}) {
 	return func(format string, a ...interface{}) {
+		msg := fmt.Sprintf(format, a...)
+		// 去除末尾的换行
+		for len(msg) >= 1 && msg[len(msg)-1] == '\n' {
+			msg = msg[:len(msg)-1]
+		}
+		if msg == "" {
+			return
+		}
 		p.updateChan <- taskMsg{
-			id: id,
-			// 替换所有的换行，防止打乱输出
-			msg: strings.ReplaceAll(fmt.Sprintf(format, a...), "\n", ""),
+			id:  id,
+			msg: msg,
 		}
 	}
 }
@@ -88,58 +100,30 @@ func (p *TaskPrinter) StatChange(id string, stat int) {
 }
 
 func (p *TaskPrinter) Start() {
-	// 程序终止后还要恢复，挺麻烦的，就不隐藏了
-	// HideCursor()
-
-	strs := p.Render()
-	mask := make([]int, len(strs))
-	line := len(strs)
-	for i, s := range strs {
-		l := runewidth.StringWidth(s)
-		mask[i] = l
-		fmt.Println(s)
-	}
+	p.wg.Add(1)
+	defer p.wg.Done()
 
 	p.ticker = p.Spinner.GetTicker()
+	defer p.ticker.Stop()
+
 	for {
-		if p.quit {
-			break
-		}
+		p.Render()
 		select {
 		case <-p.ticker.C:
 			p.Update(spinnerMsg{})
 		case m := <-p.updateChan:
 			p.Update(m)
-		}
-
-		strs := p.Render()
-		newMask := make([]int, len(strs))
-
-		if line > 0 {
-			LineMoveUp(line)
-		}
-		for i, s := range strs {
-			l := runewidth.StringWidth(s)
-			newMask[i] = l
-			fmt.Print(s)
-			// 打印空格覆盖之前的输出, 部分字符宽度统计不准(如↑), 加一点余量
-			if i < len(mask) && l < mask[i]+4 {
-				fmt.Print(strings.Repeat(" ", mask[i]-l+4))
+			if p.quit {
+				return
 			}
-			fmt.Println()
 		}
-		line = len(strs)
-		mask = newMask
-	}
-	if line > 0 {
-		LineMoveDown(line)
 	}
 }
 
 func (p *TaskPrinter) Stop() {
-	p.ticker.Stop()
 	p.updateChan <- quitMsg{}
 	close(p.updateChan)
+	p.wg.Wait()
 }
 
 func (p *TaskPrinter) Update(msg interface{}) {
@@ -160,12 +144,15 @@ func (p *TaskPrinter) Update(msg interface{}) {
 		return
 
 	case taskMsg:
+		if strings.Contains(v.msg, "\n") {
+			// 多行输出，单独处理
+			p.multiLineMsg = fmt.Sprintf("[%s] %s", v.id, v.msg)
+			return
+		}
 		i, ok := p.idMap[v.id]
 		if ok {
 			t := p.tasks[i]
-			if v.msg != "" {
-				t.msgs = append(t.msgs, v.msg)
-			}
+			t.msg = v.msg
 		}
 		return
 
@@ -174,8 +161,15 @@ func (p *TaskPrinter) Update(msg interface{}) {
 	}
 }
 
-func (p *TaskPrinter) Render() (strs []string) {
-	strs = append(strs, ">>> 任务开始：")
+func (p *TaskPrinter) Render() {
+	var strs []string
+	// 多行输出放在最上放，滚动更新
+	if p.multiLineMsg != "" {
+		strs = strings.Split(p.multiLineMsg, "\n")
+		p.multiLineMsg = ""
+	}
+	strs = append(strs, "--------")
+	// 每个任务的状态，固定刷新
 	for _, t := range p.tasks {
 		s := ""
 		switch t.stat {
@@ -192,15 +186,33 @@ func (p *TaskPrinter) Render() (strs []string) {
 		}
 
 		s += fmt.Sprintf(" [%s]", t.info.id)
-		if len(t.msgs) > 0 {
-			s += " " + t.msgs[len(t.msgs)-1]
+		if t.msg != "" {
+			s += " " + t.msg
 		}
 		if t.info.retry > 0 {
 			s += fmt.Sprintf(" (重试: %d/%d)", t.info.retry, t.info.maxRetry)
 		}
 		strs = append(strs, s)
 	}
-	return
+
+	buf := ""
+	newMask := make([]int, len(strs))
+	if p.mask != nil {
+		// 第一次输出, 无需移动光标
+		buf += fmt.Sprintf("\033[%dA", len(p.tasks)+1)
+	}
+	for i, s := range strs {
+		l := runewidth.StringWidth(s)
+		newMask[i] = l
+		buf += s
+		// 打印空格覆盖之前的输出, 部分字符宽度统计不准(如↑), 加一点余量
+		if i < len(p.mask) && l < p.mask[i]+4 {
+			buf += strings.Repeat(" ", p.mask[i]-l+4)
+		}
+		buf += "\n"
+	}
+	fmt.Print(buf)
+	p.mask = newMask
 }
 
 type Spinner struct {
@@ -220,20 +232,4 @@ func (s *Spinner) Update() {
 
 func (s *Spinner) String() string {
 	return s.Frames[s.frame%len(s.Frames)]
-}
-
-func LineMoveUp(n int) {
-	fmt.Printf("\033[%dA", n)
-}
-
-func LineMoveDown(n int) {
-	fmt.Printf("\033[%dB", n)
-}
-
-func HideCursor() {
-	fmt.Printf("\033[?25l")
-}
-
-func ShowCursor() {
-	fmt.Printf("\033[?25h")
 }

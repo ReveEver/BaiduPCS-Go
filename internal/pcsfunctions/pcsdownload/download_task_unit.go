@@ -92,7 +92,7 @@ func (dtu *DownloadTaskUnit) SetPrinter(f func(string, ...interface{})) {
 func (dtu *DownloadTaskUnit) Printf(format string, a ...interface{}) {
 	if pcsverbose.IsVerbose || dtu.printer == nil {
 		// 调试情况下有其他输出干扰
-		dtu.Printf(format, a...)
+		fmt.Printf(format, a...)
 	} else {
 		dtu.printer(format, a...)
 	}
@@ -205,7 +205,6 @@ func (dtu *DownloadTaskUnit) download(downloadURL string, client *requester.HTTP
 
 	err = der.Execute()
 	isComplete = true
-	fmt.Print("\n")
 
 	if err != nil {
 		// 下载发生错误
