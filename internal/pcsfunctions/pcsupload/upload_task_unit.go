@@ -5,6 +5,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"path"
+	"strings"
+	"time"
+
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsconfig"
@@ -12,11 +16,9 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/checksum"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/taskframework"
+	"github.com/qjfoidnh/BaiduPCS-Go/pcsverbose"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/rio"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/uploader"
-	"path"
-	"strings"
-	"time"
 )
 
 type (
@@ -33,13 +35,14 @@ type (
 		PCS               *baidupcs.BaiduPCS
 		UploadingDatabase *UploadingDatabase // 数据库
 		Parallel          int
-		NoRapidUpload     bool // 禁用秒传
-		NoSplitFile       bool // 禁用分片上传
+		NoRapidUpload     bool   // 禁用秒传
+		NoSplitFile       bool   // 禁用分片上传
 		Policy            string // 上传重名文件策略
 
 		UploadStatistic *UploadStatistic
 
 		taskInfo *taskframework.TaskInfo
+		printer  func(string, ...interface{})
 		panDir   string
 		panFile  string
 		state    *uploader.InstanceState
@@ -56,12 +59,25 @@ const (
 )
 
 const (
-	StrUploadFailed = "上传文件失败"
-	DefaultPrintFormat = "\r[%s] ↑ %s/%s %s/s in %s ............"
+	StrUploadFailed    = "上传文件失败"
+	DefaultPrintFormat = "↑ %s/%s %s/s in %s ............"
 )
 
 func (utu *UploadTaskUnit) SetTaskInfo(taskInfo *taskframework.TaskInfo) {
 	utu.taskInfo = taskInfo
+}
+
+func (utu *UploadTaskUnit) SetPrinter(f func(string, ...interface{})) {
+	utu.printer = f
+}
+
+func (utu *UploadTaskUnit) Printf(format string, a ...interface{}) {
+	if pcsverbose.IsVerbose || utu.printer == nil {
+		// 调试情况下有其他输出干扰
+		fmt.Printf(format, a...)
+	} else {
+		utu.printer(format, a...)
+	}
 }
 
 // prepareFile 解析文件阶段
@@ -86,7 +102,7 @@ func (utu *UploadTaskUnit) prepareFile() {
 	}
 
 	if utu.LocalFileChecksum.Length > baidupcs.MaxRapidUploadSize {
-		fmt.Printf("[%s] 文件超过20GB, 无法使用秒传功能, 跳过秒传...\n", utu.taskInfo.Id())
+		utu.Printf("文件超过20GB, 无法使用秒传功能, 跳过秒传...")
 		utu.Step = StepUploadUpload
 		return
 	}
@@ -126,7 +142,7 @@ func (utu *UploadTaskUnit) rapidUpload() (isContinue bool, result *taskframework
 
 	// 文件大于128MB, 输出提示信息
 	if utu.LocalFileChecksum.Length >= 128*converter.MB {
-		fmt.Printf("[%s] 检测秒传中, 请稍候...\n", utu.taskInfo.Id())
+		utu.Printf("检测秒传中, 请稍候...")
 	}
 
 	// 经测试, 文件的 crc32 值并非秒传文件所必需
@@ -145,7 +161,7 @@ func (utu *UploadTaskUnit) rapidUpload() (isContinue bool, result *taskframework
 				// TODO: fd.MD5 有可能是错误的
 				decodedMD5, _ := hex.DecodeString(fd.MD5)
 				if bytes.Compare(decodedMD5, utu.LocalFileChecksum.MD5) == 0 {
-					fmt.Printf("[%s] 目标文件, %s, 已存在, 跳过...\n", utu.taskInfo.Id(), utu.SavePath)
+					utu.Printf("目标文件, %s, 已存在, 跳过...", utu.SavePath)
 					result.Succeed = true // 成功
 					return
 				}
@@ -155,7 +171,7 @@ func (utu *UploadTaskUnit) rapidUpload() (isContinue bool, result *taskframework
 
 	pcsError = utu.PCS.RapidUpload(utu.SavePath, hex.EncodeToString(utu.LocalFileChecksum.MD5), hex.EncodeToString(utu.LocalFileChecksum.SliceMD5), fmt.Sprint(utu.LocalFileChecksum.CRC32), utu.LocalFileChecksum.Length)
 	if pcsError == nil {
-		fmt.Printf("[%s] 秒传成功, 保存到网盘路径: %s\n\n", utu.taskInfo.Id(), utu.SavePath)
+		utu.Printf("秒传成功, 保存到网盘路径: %s", utu.SavePath)
 		// 统计
 		utu.UploadStatistic.AddTotalSize(utu.LocalFileChecksum.Length)
 		result.Succeed = true // 成功
@@ -173,7 +189,7 @@ func (utu *UploadTaskUnit) rapidUpload() (isContinue bool, result *taskframework
 		}
 	}
 
-	fmt.Printf("[%s] 秒传失败, 开始上传文件...\n\n", utu.taskInfo.Id())
+	utu.Printf("秒传失败, 开始上传文件...")
 
 	// 保存秒传信息
 	utu.UploadingDatabase.UpdateUploading(&utu.LocalFileChecksum.LocalFileMeta, nil)
@@ -213,7 +229,7 @@ func (utu *UploadTaskUnit) upload() (result *taskframework.TaskUnitRunResult) {
 		default:
 		}
 
-		fmt.Printf(utu.PrintFormat, utu.taskInfo.Id(),
+		utu.Printf(utu.PrintFormat,
 			converter.ConvertFileSize(status.Uploaded(), 2),
 			converter.ConvertFileSize(status.TotalSize(), 2),
 			converter.ConvertFileSize(status.SpeedsPerSecond(), 2),
@@ -224,8 +240,7 @@ func (utu *UploadTaskUnit) upload() (result *taskframework.TaskUnitRunResult) {
 	// result
 	result = &taskframework.TaskUnitRunResult{}
 	muer.OnSuccess(func() {
-		fmt.Printf("\n")
-		fmt.Printf("[%s] 上传文件成功, 保存到网盘路径: %s\n", utu.taskInfo.Id(), utu.SavePath)
+		utu.Printf("上传文件成功, 保存到网盘路径: %s", utu.SavePath)
 		// 统计
 		utu.UploadStatistic.AddTotalSize(utu.LocalFileChecksum.Length)
 		utu.UploadingDatabase.Delete(&utu.LocalFileChecksum.LocalFileMeta) // 删除
@@ -293,10 +308,10 @@ func (utu *UploadTaskUnit) OnRetry(lastRunResult *taskframework.TaskUnitRunResul
 	// 输出错误信息
 	if lastRunResult.Err == nil {
 		// result中不包含Err, 忽略输出
-		fmt.Printf("[%s] %s, 重试 %d/%d\n", utu.taskInfo.Id(), lastRunResult.ResultMessage, utu.taskInfo.Retry(), utu.taskInfo.MaxRetry())
+		utu.Printf("%s, 重试 %d/%d", lastRunResult.ResultMessage, utu.taskInfo.Retry(), utu.taskInfo.MaxRetry())
 		return
 	}
-	fmt.Printf("[%s] %s, %s, 重试 %d/%d\n", utu.taskInfo.Id(), lastRunResult.ResultMessage, lastRunResult.Err, utu.taskInfo.Retry(), utu.taskInfo.MaxRetry())
+	utu.Printf("%s, %s, 重试 %d/%d", lastRunResult.ResultMessage, lastRunResult.Err, utu.taskInfo.Retry(), utu.taskInfo.MaxRetry())
 }
 
 func (utu *UploadTaskUnit) OnSuccess(lastRunResult *taskframework.TaskUnitRunResult) {
@@ -306,10 +321,10 @@ func (utu *UploadTaskUnit) OnFailed(lastRunResult *taskframework.TaskUnitRunResu
 	// 失败
 	if lastRunResult.Err == nil {
 		// result中不包含Err, 忽略输出
-		fmt.Printf("[%s] %s\n", utu.taskInfo.Id(), lastRunResult.ResultMessage)
+		utu.Printf("%s", lastRunResult.ResultMessage)
 		return
 	}
-	fmt.Printf("[%s] %s, %s\n", utu.taskInfo.Id(), lastRunResult.ResultMessage, lastRunResult.Err)
+	utu.Printf("%s, %s", lastRunResult.ResultMessage, lastRunResult.Err)
 }
 
 func (utu *UploadTaskUnit) OnComplete(lastRunResult *taskframework.TaskUnitRunResult) {
@@ -320,11 +335,11 @@ func (utu *UploadTaskUnit) RetryWait() time.Duration {
 }
 
 func (utu *UploadTaskUnit) Run() (result *taskframework.TaskUnitRunResult) {
-	fmt.Printf("[%s] 准备上传: %s\n", utu.taskInfo.Id(), utu.LocalFileChecksum.Path)
+	utu.Printf("准备上传: %s", utu.LocalFileChecksum.Path)
 
 	err := utu.LocalFileChecksum.OpenPath()
 	if err != nil {
-		fmt.Printf("[%s] 文件不可读, 错误信息: %s, 跳过...\n", utu.taskInfo.Id(), err)
+		utu.Printf("文件不可读, 错误信息: %s, 跳过...", err)
 		return
 	}
 	defer utu.LocalFileChecksum.Close() // 关闭文件

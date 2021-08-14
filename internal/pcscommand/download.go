@@ -2,6 +2,11 @@ package pcscommand
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sort"
+
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsconfig"
@@ -11,10 +16,6 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/taskframework"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/downloader"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/transfer"
-	"os"
-	"path/filepath"
-	"runtime"
-	"sort"
 )
 
 type (
@@ -43,7 +44,7 @@ func downloadPrintFormat(load int) string {
 	if load <= 1 {
 		return pcsdownload.DefaultPrintFormat
 	}
-	return "[%s] ↓ %s/%s %s/s in %s, left %s ...\n"
+	return "↓ %s/%s %s/s in %s, left %s ...\n"
 }
 
 // RunDownload 执行下载网盘内文件
@@ -100,7 +101,7 @@ func RunDownload(paths []string, options *DownloadOptions) {
 	)
 
 	// 预测要下载的文件数量
-	file_dir_list := make([]*baidupcs.FileDirectory,0,10)
+	file_dir_list := make([]*baidupcs.FileDirectory, 0, 10)
 	for k := range paths {
 		pcs.FilesDirectoriesRecurseList(paths[k], baidupcs.DefaultOrderOptions, func(depth int, _ string, fd *baidupcs.FileDirectory, pcsError pcserror.Error) bool {
 			if pcsError != nil {
@@ -138,7 +139,7 @@ func RunDownload(paths []string, options *DownloadOptions) {
 	sort.Slice(file_dir_list, func(i, j int) bool {
 		return file_dir_list[i].Size < file_dir_list[j].Size
 	})
-	for _,v := range file_dir_list {
+	for _, v := range file_dir_list {
 		newCfg := *cfg
 		unit := pcsdownload.DownloadTaskUnit{
 			Cfg:                  &newCfg, // 复制一份新的cfg

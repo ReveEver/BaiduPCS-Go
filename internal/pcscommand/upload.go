@@ -2,6 +2,11 @@ package pcscommand
 
 import (
 	"fmt"
+	"os"
+	"path"
+	"path/filepath"
+	"strings"
+
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs"
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsconfig"
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsfunctions/pcsupload"
@@ -10,10 +15,6 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/checksum"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/taskframework"
-	"os"
-	"path"
-	"path/filepath"
-	"strings"
 )
 
 const (
@@ -26,9 +27,9 @@ type (
 	UploadOptions struct {
 		Parallel      int
 		MaxRetry      int
-		Load 		  int
+		Load          int
 		NoRapidUpload bool
-		NoSplitFile   bool // 禁用分片上传
+		NoSplitFile   bool   // 禁用分片上传
 		Policy        string // 同名文件处理策略
 	}
 )
@@ -37,7 +38,7 @@ func uploadPrintFormat(load int) string {
 	if load <= 1 {
 		return pcsupload.DefaultPrintFormat
 	}
-	return "[%s] ↑ %s/%s %s/s in %s ...\n"
+	return "↑ %s/%s %s/s in %s ...\n"
 }
 
 // RunRapidUpload 执行秒传文件, 前提是知道文件的大小, md5, 前256KB切片的 md5, crc32
@@ -90,11 +91,11 @@ func RunUpload(localPaths []string, savePath string, opt *UploadOptions) {
 		opt.MaxRetry = DefaultUploadMaxRetry
 	}
 
-	if opt.Load <=0 {
+	if opt.Load <= 0 {
 		opt.Load = pcsconfig.Config.MaxUploadLoad
 	}
 
-	if opt.Policy!="fail" && opt.Policy!="newcopy" && opt.Policy!="overwrite" && opt.Policy!="skip" {
+	if opt.Policy != "fail" && opt.Policy != "newcopy" && opt.Policy != "overwrite" && opt.Policy != "skip" {
 		opt.Policy = pcsconfig.Config.UPolicy
 	}
 

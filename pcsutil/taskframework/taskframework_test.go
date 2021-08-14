@@ -2,9 +2,10 @@ package taskframework_test
 
 import (
 	"fmt"
-	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/taskframework"
 	"testing"
 	"time"
+
+	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/taskframework"
 )
 
 type (
@@ -16,6 +17,9 @@ type (
 
 func (tu *TestUnit) SetTaskInfo(taskInfo *taskframework.TaskInfo) {
 	tu.taskInfo = taskInfo
+}
+
+func (tu *TestUnit) SetPrinter(f func(string, ...interface{})) {
 }
 
 func (tu *TestUnit) OnFailed(lastRunResult *taskframework.TaskUnitRunResult) {

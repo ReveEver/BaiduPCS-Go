@@ -1,11 +1,12 @@
 package taskframework
 
 import (
-	"github.com/GeertJohan/go.incremental"
-	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/waitgroup"
-	"github.com/oleiade/lane"
 	"strconv"
 	"time"
+
+	incremental "github.com/GeertJohan/go.incremental"
+	"github.com/oleiade/lane"
+	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/waitgroup"
 )
 
 type (
@@ -13,6 +14,7 @@ type (
 		incr     *incremental.Int // 任务id生成
 		deque    *lane.Deque      // 队列
 		parallel int              // 任务的最大并发量
+		printer  *TaskPrinter
 
 		// 是否统计失败队列
 		IsFailedDeque bool
@@ -34,6 +36,9 @@ func (te *TaskExecutor) lazyInit() {
 	if te.parallel < 1 {
 		te.parallel = 1
 	}
+	if te.printer == nil {
+		te.printer = NewTaskPrinter()
+	}
 	if te.IsFailedDeque {
 		te.failedDeque = lane.NewDeque()
 	}
@@ -52,6 +57,8 @@ func (te *TaskExecutor) Append(unit TaskUnit, maxRetry int) *TaskInfo {
 		maxRetry: maxRetry,
 	}
 	unit.SetTaskInfo(taskInfo)
+	te.printer.SetTaskInfo(taskInfo)
+	unit.SetPrinter(te.printer.GetPrintFunc(taskInfo.Id()))
 	te.deque.Append(&TaskInfoItem{
 		Info: taskInfo,
 		Unit: unit,
@@ -75,6 +82,8 @@ func (te *TaskExecutor) Count() int {
 //Execute 执行任务
 func (te *TaskExecutor) Execute() {
 	te.lazyInit()
+	go te.printer.Start()
+	defer te.printer.Stop()
 
 	for {
 		wg := waitgroup.NewWaitGroup(te.parallel)
@@ -91,6 +100,7 @@ func (te *TaskExecutor) Execute() {
 			go func(task *TaskInfoItem) {
 				defer wg.Done()
 
+				te.printer.StatChange(task.Info.Id(), TaskRun)
 				result := task.Unit.Run()
 
 				// 返回结果为空
@@ -100,6 +110,7 @@ func (te *TaskExecutor) Execute() {
 				}
 
 				if result.Succeed {
+					te.printer.StatChange(task.Info.Id(), TaskDone)
 					task.Unit.OnSuccess(result)
 					task.Unit.OnComplete(result)
 					return
@@ -113,6 +124,7 @@ func (te *TaskExecutor) Execute() {
 						task.Unit.OnFailed(result)
 						if te.IsFailedDeque {
 							// 加入失败队列
+							te.printer.StatChange(task.Info.Id(), TaskFail)
 							te.failedDeque.Append(task)
 						}
 						task.Unit.OnComplete(result)
@@ -132,6 +144,7 @@ func (te *TaskExecutor) Execute() {
 				task.Unit.OnFailed(result)
 				if te.IsFailedDeque {
 					// 加入失败队列
+					te.printer.StatChange(task.Info.Id(), TaskFail)
 					te.failedDeque.Append(task)
 				}
 				task.Unit.OnComplete(result)
